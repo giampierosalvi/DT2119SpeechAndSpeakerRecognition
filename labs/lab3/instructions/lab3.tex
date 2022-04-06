@@ -1,0 +1,795 @@
+\documentclass{nada-ten}
+\usepackage[utf8]{inputenc}
+%\usepackage[swedish,english]{babel}
+\usepackage{array}
+%\usepackage{qbordermatrix}
+\usepackage{graphicx}
+\usepackage[dvipsnames]{xcolor}
+\graphicspath{{figures/}}
+\usepackage{upquote} % this is to make straight apostrophes in verbatim
+\usepackage{listings}
+\usepackage{mdframed}
+\usepackage{tikz}
+\usetikzlibrary{calc,fit}
+\usepackage{ifthen}
+
+\usepackage{tipa}
+
+\usepackage[
+  backend=biber, % for utf8 encoding (dowsn't seem to work)
+  %style=numeric
+  %natbib=true,
+  %abbreviate=true,
+  %firstinits=true,
+  %maxcitenames=99, % affects citations in the text and labels (problem with \fullcite)
+  %mincitenames=2, % affects citations in the text and labels
+  %maxbibnames=99  % affects bibliografy only
+]{biblatex}
+
+\addbibresource{~/Documents/bib/gs-full.bib}
+\addbibresource{IEEEfull.bib}
+\addbibresource{~/Documents/bib/gs.bib}
+
+\author{Giampiero Salvi}
+\course{DT2119 Speech and Speaker Recognition}
+\semester{Vårterminen \the\year}
+\title{DT2119 Lab3: Phoneme Recognition with Deep Neural Networks}
+
+\begin{document}
+\maketitle
+%\setlanguage{english}
+% \begin{mdframed}
+% This version of the lab is not complete and will be updated in the coming days. In the meantime, you can safely start and carry out up to and including Section~\ref{sec:datapreparation}. You can even start with Section~\ref{sec:dnn}, keeping in mind that I might add some more explanations and tasks there.
+% \end{mdframed}
+\section{Objectives}
+After this exercise you should be able to:
+\begin{itemize}
+\item create phonetic annotations of speech recordings using predefined phonetic models
+\item use software libraries\footnote{In this implementation you will use TensorFlow \url{https://www.tensorflow.org/} and Keras \url{https://keras.io/}} to define and train Deep Neural Networks (DNNs) for phoneme recognition
+%\item implement continuous speech recognition 
+\item explain the difference between HMM and DNN training
+\item compare which speech features are more suitable for each model and explain why
+%\item explain the difference between isolated word and continuous speech recognition
+\end{itemize}
+
+In the process you should also familiarise with the facilities at the Parallel Data Centre (PDC)\footnote{\url{https://www.pdc.kth.se/}, this is also intended as an introduction to the work in the final project.} at KTH.
+Alternatively, you will be able to use credits for the Google Cloud Platform. Instructions will be given in Canvas.
+
+\section{Task}
+Train and test a phone recogniser based on digit speech material from the TIDIGIT database:
+\begin{itemize}
+\item using predefined Gaussian-emission HMM phonetic models, create time aligned phonetic transcriptions of the TIDIGITS database,
+\item define appropriate DNN models for phoneme recognition using Keras,
+\item train and evaluate the DNN models on a frame-by-frame recognition score,
+\item repeat the training by varying model parameters and input features
+\end{itemize}
+Optional:
+\begin{itemize}
+\item perform and evaluate continuous speech recognition at the phoneme and word level using Gaussian-emission HMM models
+\item perform and evaluate continuous speech recognition at the phoneme and word level using DNN-HMM models
+\end{itemize}
+
+In order to pass the lab, you will need to follow the steps described in this document, and present your results to a teaching assistant. Use Canvas to book a time slot for the presentation. Remember that the goal is not to show your code, but rather to show that you have understood all the steps.
+
+%\section{Prerequisite}
+%\label{sec:prerequisite}
+%The lab uses forced alignment information obtained with GMM-HMM models. The files are provided in the lab package:
+%\begin{verbatim}
+%train_state_aligned.mlf
+%test_state_aligned.mlf
+%\end{verbatim}
+%
+%These files are in HTK MLF format, each file starts with the string
+%
+%, but if you want to know how they were obtained, please refer to Lab~3a. Lab~3a is no longer required for the course, but it explains how to use HTK The Hidden Markov Model Toolkit, to train GMM-HMM models.
+
+Most of the lab can be performed on any machine running python. The Deep Neural Network training is best performed on a GPU, for example by queuing your jobs onto \texttt{tegner.pdc.kth.se} or using the Google Cloud Platform. See instructions in Appendix~\ref{app:pdc}, on how to use the PDC resources, or check instructions on Canvas for the GCP.
+
+%In order to add all the required tools in the PATH if you are on a CSC Ubuntu machine, run \verb|source tools/modules_csc|. If you are on \texttt{tegner.pdc.kth.se}, refer to .
+
+\section{Data}
+\label{sec:data}
+The speech data used in this lab is from the full TIDIGIT database (rather than a small subset as in Lab~1 and Lab~2). The database is stored on the AFS cell \texttt{kth.se} at the following path:
+\begin{verbatim}
+/afs/kth.se/misc/csc/dept/tmh/corpora/tidigits
+\end{verbatim}
+If you have continuous access to AFS during the lab, for example if you use a CSC Ubuntu machine, create a symbolic link in the lab directory with the command:
+\begin{verbatim}
+ln -s /afs/kth.se/misc/csc/dept/tmh/corpora/tidigits
+\end{verbatim}
+Otherwise, copy the data into a directory called \texttt{tidigits} in the lab directory, but be aware of the fact that the database is covered by copyright\footnote{See \url{https://catalog.ldc.upenn.edu/LDC93S10} for more information.}.
+
+The data is divided into disks. The training data is under:
+\begin{verbatim}
+tidigits/disc_4.1.1/tidigits/train/
+\end{verbatim}
+whereas the test data is under:
+\begin{verbatim}
+tidigits/disc_4.2.1/tidigits/test/
+\end{verbatim}
+
+The next level of hierarchy in the directory tree determines the gender of the speakers (\texttt{man}, \texttt{woman}). The next level determines the unique two letter speaker identifier (\texttt{ae}, \texttt{aw}, \dots). Finally, under the speaker specific directories you find all the wave files in NIST SPHERE file format. The file name contains information about the spoken digits. For example, the file \texttt{52o82a.wav} contains the utterance ``five two oh eight two''. The last character in the file name represents repetitions (\texttt{a} is the first repetition and \texttt{b} the second). Every isolated digit is repeated twice, whereas the sequences of digits are only repeated once.
+
+To simplify parsing this information, the \texttt{path2info} function in \texttt{lab3\_tools.py} is provided that accepts a path name as input and returns gender, speaker id, sequence of digits, and repetition, for example:
+\begin{verbatim}
+>>> path2info('tidigits/disc_4.1.1/tidigits/train/man/ae/z9z6531a.wav')
+('man', 'ae', 'z9z6531', 'a')
+\end{verbatim}
+
+In \texttt{lab3\_tools.py} you also find the function \texttt{loadAudio} that takes an input path and returns speech samples and sampling rate, for example:
+\begin{verbatim}
+>>> loadAudio('tidigits/disc_4.1.1/tidigits/train/man/ae/z9z6531a.wav')
+(array([ 10.99966431,  12.99960327,  ...,   8.99972534]), 20000)
+\end{verbatim}
+The function relies on the package \texttt{soundfile} that can be installed in python from standard repositories.
+If you want to know the details and motivation for this function, please refer the documentation in \texttt{lab3\_tools.py}.
+
+\section{Preparing the Data for DNN Training}
+\label{sec:datapreparation}
+\subsection{Target Class Definition}
+In this exercise you will use the emitting states in the \texttt{phoneHMMs} models from Lab~2 as target classes for the deep neural networks. It is beneficial to create a list of unique states for reference, to make sure that the output of the DNNs always refer to the right HMM state. You can do this with the following commands:
+\begin{verbatim}
+>>> phoneHMMs = np.load('lab2_models_all.npz')['phoneHMMs'].item()
+>>> phones = sorted(phoneHMMs.keys())
+>>> nstates = {phone: phoneHMMs[phone]['means'].shape[0] for phone in phones}
+>>> stateList = [ph + '_' + str(id) for ph in phones for id in range(nstates[ph])]
+>>> stateList
+['ah_0', 'ah_1', 'ah_2', 'ao_0', 'ao_1', 'ao_2', 'ay_0', 'ay_1', 'ay_2', ..., 
+ ..., 'w_0', 'w_1', 'w_2', 'z_0', 'z_1', 'z_2']
+\end{verbatim}
+If you want to recover the numerical index of a particular state in the list, you can do for example:
+\begin{verbatim}
+>>> stateList.index('ay_2')
+8
+\end{verbatim}
+It might be a good idea to save this list in a file, to make sure you always use the same order for the states.
+
+\subsection{Forced Alignment}
+\label{sec:forcedalignment}
+In order to train and test Deep Neural Networks, you will need time aligned transcriptions of the data. In other words, you will need to know the right target class for every time step or feature vector. The Gaussian-emission HMM models in \texttt{phoneHMMs} can be used to align the states to each utterance by means of \textit{forced alignment}.
+To do this, you will build a combined HMM concatenating the models for all the phones in the utterance, and then you will run the Viterbi decoder to recover the best path through this model.
+
+In this section we will do this for a specific file as an example. You can find the intermediate steps in the \texttt{lab3\_example.npz} file. In the next section you will repeat this process for the whole database. First read the audio and compute liftered MFCC features as you did in Lab~1:
+\begin{verbatim}
+>>> filename = 'tidigits/disc_4.1.1/tidigits/train/man/nw/z43a.wav'
+>>> samples, samplingrate = loadAudio(filename)
+>>> lmfcc = mfcc(samples)
+\end{verbatim}
+
+%In order to keep track of the original states when you combine models, modify the \texttt{concatHMMs} function you implemented in Lab~2 so that it returns two additional items in the dictionary called \texttt{modelids} and \texttt{stateids}. The first is a list of strings and the second a list of integers. They contain, for each state in the combined model, the name of the original model and the state index in that original model. For example, if we concatenate \texttt{sil}, \texttt{ow} and \texttt{sil}, as in the example in Lab~2:
+%\begin{verbatim}
+%>>> wordHMMs['o'] = concatHMMs2(phoneHMMs, ['sil', 'ow', 'sil'])
+%\end{verbatim}
+%the \verb|wordHMMs['o']| dictionary should contain the following extra keys and values:
+%\begin{verbatim}
+%>>> wordHMMs['o']['modelids'] = ['sil', 'sil', 'sil', 'ow', 'ow', 'ow',
+%                                                      'sil', 'sil', 'sil']
+%>>> wordHMMs['o']['stateids'] = [0, 1, 2, 0, 1, 2, 0, 1, 2]
+%\end{verbatim}
+%
+%For each digit in the lexicon, using the \texttt{concatHMMs2} function, create word models in a similar way as in Lab~2. This time, do not add the initial and final silence, for example:
+%\begin{verbatim}
+%>>> wordHMMs = {}
+%>>> for word in list(prondict.keys()):
+%>>>     wordHMMs[word] = concatHMMs2(phoneHMMs, prondict[word])
+%\end{verbatim}
+%
+%Add an additional word corresponding to silence:
+%\begin{verbatim}
+%>>> wordHMMs['SIL'] = concatHMMs2(phoneHMMs, ['sil'])
+%\end{verbatim}
+%
+%For each utterance, use the \texttt{concatHMMs2} function again to create a HMM model that corresponds to the whole utterance starting from the word models. For example, for an utterance in \texttt{z43a.wav} which contains the digits ``zero four three'', the corresponding HMM should be:
+
+Now, use the file name, and possibly the \texttt{path2info} function described in Section~\ref{sec:data}, to recover the sequence of digits (word level transcription) in the file. For example:
+\begin{verbatim}
+>>> wordTrans = list(path2info(filename)[2])
+>>> wordTrans
+['z', '4', '3']
+\end{verbatim}
+The file \texttt{z43a.wav} contains, as expected, the digits ``zero four three''. Write the \texttt{words2phones} function in \texttt{lab3\_proto.py} that, given a word level transcription and the pronunciation dictionary (\texttt{prondict} from Lab~2), returns a phone level transcription, including initial and final silence and short pause models after each word. For example:
+\begin{verbatim}
+>>> from prondict import prondict
+>>> phoneTrans = words2phones(wordTrans, prondict)
+>>> phoneTrans
+['sil', 'z', 'iy', 'r', 'ow', 'sp', 'f', 'ao', 'r', 'sp', 'th', 'r', 'iy', 'sp', 'sil']
+\end{verbatim}
+
+Now, use the \texttt{concatHMMs} function you implemented in Lab~2 to create a combined model for this specific utterance:
+\begin{verbatim}
+>>> utteranceHMM = concatHMMs(phoneHMMs, phoneTrans)
+\end{verbatim}
+
+Note that the \emph{short pause} model \verb|phoneHMMs['sp']| is different from the other HMM models. It has a single emitting state and can be skipped in case there is no silence.
+
+We also need to be able to map the states in \texttt{utteranceHMM} into the unique state names in \texttt{stateList}, and, in turns, into the unique state indexes by \texttt{stateList.index()}. In order to do this for this particular utterance, you can run:
+\begin{verbatim}
+>>> stateTrans = [phone + '_' + str(stateid) for phone in phoneTrans
+                  for stateid in range(nstates[phone])]
+\end{verbatim}
+This array gives you, for each state in \texttt{utteranceHMM}, the corresponding unique state identifier, for example:
+\begin{verbatim}
+>>> stateTrans[10]
+'r_1'
+\end{verbatim}
+
+Use the \texttt{log\_multivariate\_normal\_density\_diag} and the \texttt{viterbi} function you implemented in Lab~2 to align the states in the \texttt{utteranceHMM} model to the sequence of feature vectors in \texttt{lmfcc}. Use \texttt{stateTrans} to convert the sequence of Viterbi states (corresponding to the \texttt{utteranceHMM} model) to the unique state names in \texttt{stateList}.
+%Provided that you have implemented \texttt{concatHMMs2} correctly, the function \texttt{viterbi2info} in \texttt{lab3\_tools.py} will help you recover the \textit{frame-by-frame} sequence of symbols and states both at the word and the phone level
+%\begin{verbatim}
+%>>> info = viterbi2info(viterbiPath, utteranceHMM, wordsHMMs)
+%\end{verbatim}
+%Refer to the documentation in \texttt{lab3\_tools.py} for more information.
+
+At this point it would be good to check your alignment. You can use an external program such as \texttt{wavesurfer}\footnote{\url{https://sourceforge.net/projects/wavesurfer/}} to visualise the speech file and the transcription. The \texttt{frames2trans} function in \texttt{lab3\_tools.py}, can be used to convert the \textit{frame-by-frame} sequence of symbols into a transcription in standard format (start time, end time, symbol\dots). For example, assuming you saved the sequence of symbols you got from the Viterbi path into \texttt{viterbiStateTrans}, you can run:
+\begin{verbatim}
+>>> frames2trans(viterbiStateTrans, outfilename='z43a.lab')
+\end{verbatim}
+which will save the transcription to the \texttt{z43a.lab} file.
+If you try with other files, save the transcription with the same name as the \texttt{wav} file, but with \texttt{lab} extension. Then open the \texttt{wav} file with \texttt{wavesurfer}. Unfortunately, \texttt{wavesurfer} does not not recognise the NIST file format automatically. You will get a window to choose the parameters of the file. Choose 20000 for ``Sampling Rate'', and 1024 for ``Read Offset (bytes)''. When asked to choose a configuration, choose ``Transcription''. Your transcription should be loaded automatically, if you saved it with the right file name. Select the speech corresponding to the phonemes that make up a digit, and listen to the sound. Is the alignment correct? What can you say observing the alignment between the sound file and the classes?
+
+\subsection{Feature Extraction}
+Once you are satisfied with your forced aligned transcriptions, extract features and targets for the whole database. To save memory, convert the targets to indices with \texttt{stateList.index()}.
+You should extract both the liftered MFCC features that are used with the Gaussian-emission HMMs and the DNNs, and the filterbank features (\texttt{mspec} in Lab~1) that are used for the DNNs.
+%For each file in the training and test set extract the liftered MFCC features and the filterbank features using the functions you implemented in Lab~1. Keep the features in separate arrays for each file in a similar way as we did in Lab~1 and Lab~2 for the 44 examples we considered in those exercises. It is also good to save the file name for each file, so that you can, at any time, recover information about the gender, speaker ID, word level transcription, and repetition by means of the \texttt{path2info} function (Section~\ref{sec:data}).
+One way of traversing the files in the database is:
+
+\begin{verbatim}
+>>> import os
+>>> traindata = []
+>>> for root, dirs, files in os.walk('tidigits/disc_4.1.1/tidigits/train'):
+>>>     for file in files:
+>>>         if file.endswith('.wav'):
+>>>             filename = os.path.join(root, file)
+>>>             samples, samplingrate = loadAudio(filename)
+>>>             ...your code for feature extraction and forced alignment
+>>>             traindata.append({'filename': filename, 'lmfcc': lmfcc,
+                                  'mspec': 'mspec', 'targets': targets})
+\end{verbatim}
+
+Extracting features and computing forced alignment for the full training set took around 10 minutes and 270 megabytes on a computer with 8 Intel(R) Core(TM) i7-4790 CPU @ 3.60GHz. You probably want to save the data to file to avoid computing it again. For example with:
+\begin{verbatim}
+>>> np.savez('traindata.npz', traindata=traindata)
+\end{verbatim}
+Do the same with the test set files at \texttt{tidigits/disc\_4.2.1/tidigits/test}
+
+
+%and, similarly, the sequence of states in the \texttt{wordHMMs} models with
+%\begin{verbatim}
+%>>> wordStates = [utteranceHMM['stateids'][state] for state in viterbiPath]
+%\end{verbatim}
+%You can recover the identity of the phone, and the corresponding phone level state, for each time step with:
+%\begin{verbatim}
+%>>> N = len(words)
+%>>> phones = [wordHMMs[words[n]]['modelids'][wordStates[n]] for n in range(N)]
+%>>> phoneStates = [wordHMMs[words[n]]['stateids'][wordStates[n]] for n in range(N)]
+%\end{verbatim}
+%
+%Finally, you can recover the unique IDs of the phonetic states at each time step (that you will use as target in the DNN training), by issuing:
+%\begin{verbatim}
+%>>> stateNames = [phones[n] + '_' + str(phoneStates[n]) for n in range(len(phones))]
+%>>> stateIDs = [stateList.index(stateNames[n] for n in range(len(phones))]
+%\end{verbatim}
+%Check your forced alignment with the help of \texttt{wavesurfer}. The \texttt{frames2trans} function in \texttt{lab3\_tools.py}, can be used to convert a sequence of symbols into a transcription in standard format. For example
+
+% \subsection{Feature Extraction and File Formats}
+% \label{sec:features}
+% In Machine learning problems that do not involve sequences, the feature files are simply $N\times M$ arrays with $N$ examples of dimension $M$, where $N$ is the number of examples in the full training, validation or test sets. In speech, as in any other sequential problems, we need to keep track of the sequence boundaries. There are a number of ways to do this:
+% \begin{itemize}
+% \item use a different file for each utterance
+% \item use a list of arrays with one array per utterance (see Lab 1 and 2)
+% \item use a single array, but store the length of each utterance in an additional array
+% \item use specially designed data formats
+% \end{itemize}
+% The PDNN toolkit that you will use in the rest of the exercise supports two specially designed data formats: \texttt{pfile} and \texttt{kaldi}. We decided to use pfiles in this exercise because many examples in the documentation of PDNN use this format. For more information on pfiles check out \url{http://www1.icsi.berkeley.edu/Speech/faq/ftrformats.html}.
+% %pfiles, we are going to use the Kaldi format for two reasons: 1) pfiles are rather nasty 32 bits big-endian files, and to create them you need to install extra software\footnote{} and 2) Kaldi is one of the most popular toolkit to build recognizers, at the moment\footnote{See \url{http://kaldi.sourceforge.net/}}.
+
+% First we need to assign numerical ids to each HMM state that we want to model with the DNN (target states). The script \verb|tools/phones2stateid.py| takes as input a list of phones and generates a list of states with incremental ids:
+% \begin{verbatim}
+% tools/phones2stateid.py workdir/phones1.lst > workdir/state2id.lst
+% \end{verbatim}
+% Refer to the \verb|workdir/state2id.lst| file when you want to convert the outputs of your DNN back to posteriors for the states, or if you want to merge states that belong to the same phoneme when you compute phoneme error rates.
+
+% Now compute the feature files. You can use any of the features listed in Lab 3A, although the rest of the lab suggest you compare \verb|MFCC_0_D_A| and \texttt{FBANK} features. The script \verb|tools/htk2kaldi.py| parses a Master Label File in HTK format, generates features and label files for each utterance and stores them in three files in Kaldi format.
+
+% For example:
+% \begin{verbatim}
+% tools/htk2pfile.py workdir/train_tr_align.mlf workdir/state2id.lst FBANK \
+%      workdir/train_tr_FBANK.pfile
+% tools/htk2pfile.py workdir/train_va_align.mlf workdir/state2id.lst FBANK \
+%      workdir/train_va_FBANK.pfile
+% tools/htk2pfile.py workdir/test_align.mlf workdir/state2id.lst FBANK \
+%      workdir/test_FBANK.pfile
+% \end{verbatim}
+
+\subsection{Training and Validation Sets}
+Split the training data into a training set (roughly 90\%) and validation set (remaining 10\%).
+Make sure that there is a similar distribution of men and women in both sets, and that each speaker is only included in one of the two sets. The last requirement is to ensure that we do not get artificially good results on the validation set. Explain how you selected the two data sets.
+
+\subsection{Acoustic Context (Dynamic Features)}
+\label{sec:dynamicfeatures}
+It is often beneficial to include some indication of the time evolution of the feature vectors as input to the models. In GMM-HMMs this is usually done by computing first and second order derivatives of the features. In DNN modelling it is more common to stack several consecutive feature vectors together.
+
+For each utterance and time step, stack 7 MFCC or filterbank features symmetrically distributed around the current time step. That is, at time $n$, stack the features at times $[n-3, n-2, n-1, n, n+1, n+2, n+3]$). At the beginning and end of each utterance, use mirrored feature vectors in place of the missing vectors. For example at the beginning use feature vectors with indexes $[3, 2, 1, 0, 1, 2, 3]$ for the first time step, $[2, 1, 0, 1, 2, 3, 4]$ for the second time step, and so on. The ``boundary effect'' is usually not very important because each utterance begins and ends with silence.
+
+\subsection{Feature Standardisation}
+Normalise the features over the training set so that each feature coefficient has zero mean and unit variance. This process is called ``standardisation''. In speech there are at least three ways of doing this:
+\begin{enumerate}
+\item normalise over the whole training set,
+\item normalise over each speaker separately, or
+\item normalise each utterance individually.
+\end{enumerate}
+Think about the implications of these different strategies. In the third case, what will happen with the very short utterances in the files containing isolated digits?
+
+You can use the \texttt{StandardScaler} from \texttt{sklearn.preprocessing} in order to achieve this.
+In case you normalise over the whole training set, save the normalisation coefficients and reuse them to normalise the validation and test set. In this case, it is also easier to perform the following step \emph{before} standardisation.
+
+Once the features are standardised, for each of the training, validation and test sets, flatten the data structures, that is, concatenate all the feature matrices so that you obtain a single matrix per set that is $N\times D$, where $D$ is the dimension of the features and $N$ is the total number of frames in each of the sets. Do the same with the targets, making sure you concatenate them in the same order. To clarify, you should create the following arrays $N\times D$ (the dimensions vary slightly depending on how you split the training data into train and validation set), where in parentheses you have the dynamic version of the features:
+\begin{center}
+\begin{tabular}{lllrl}
+  Name & Content & set & $N$ & $D$ \\
+  \hline
+  \texttt{(d)lmfcc\_train\_x} & MFCC features       & train      & $\sim 1356000$ & $13$ ($91$) \\
+  \texttt{(d)lmfcc\_val\_x}   & MFCC features       & validation & $\sim 150000$  & $13$ ($91$) \\
+  \texttt{(d)lmfcc\_test\_x}  & MFCC features       & test       & $1527014$      & $13$ ($91$) \\
+  \texttt{(d)mspec\_train\_x} & Filterbank features & train      & $\sim 1356000$ & $40$ ($280$) \\
+  \texttt{(d)mspec\_val\_x}   & Filterbank features & validation & $\sim 150000$  & $40$ ($280$) \\
+  \texttt{(d)mspec\_test\_x}  & Filterbank features & test       & $1527014$      & $40$ ($280$) \\
+  \hline
+  \texttt{train\_y}        & targets                       & train      & $\sim 1356000$ & $1$ \\
+  \texttt{val\_y}          & targets                       & validation & $\sim 150000$  & $1$ \\
+  \texttt{test\_y}         & targets                       & test       & $1527014$      & $1$ \\
+  \hline
+\end{tabular}
+\end{center}
+You will also need to convert feature arrays to 32 bits floating point format because of the hardware limitation in most GPUs, for example:
+\begin{verbatim}
+>>> lmfcc_train_x = lmfcc_train_x.astype('float32')
+\end{verbatim}
+and the target arrays into the Keras categorical format, for example:
+\begin{verbatim}
+>>> from keras.utils import np_utils
+>>> output_dim = len(stateList)
+>>> train_y = np_utils.to_categorical(train_y, output_dim)
+\end{verbatim}
+
+
+% For a simple way of doing this over a whole set of observations in each file, check the \verb|pfile_norm| command from \verb|pfile_utils|. Discuss why normalising the validation and test sets this way is not entirely correct. As an alternative, you can normalise each utterance independently with \verb|pfile_normutts|. What are the advantages and disadvantages of this strategy? If you wish to implement your own normalisation strategy, use the functions \verb|pfile_read| and \verb|pfile_write| in \verb|tools/pfile.py| to read the data into \texttt{numpy} arrays, and to write it back to file after modification. These functions are also useful to read the labels to do the frame-by-frame evaluation required by the next steps.
+
+% {\small
+% \begin{verbatim}
+% tools/htk2kaldi.py workdir/train_tr_align.mlf workdir/state2id.lst FBANK workdir/train_tr
+% \end{verbatim}
+% }
+% Will generate three files:
+% \begin{itemize}
+% \item \verb|workdir/train_tr_FBANK.scp|: one line per utterance, with index to find the utterance data in the \texttt{ark} file
+% \item \verb|workdir/train_tr_FBANK.ark|: binary file containing features for each utterance
+% \item \verb|workdir/train_tr_FBANK.ali|: label file containing in each row the list of state ids for each utterance
+% \end{itemize}
+
+% To compute features for the validation and test sets, run similarly:
+% {\small
+% \begin{verbatim}
+% tools/htk2kaldi.py workdir/train_va_align.mlf workdir/state2id.lst FBANK workdir/train_va
+% tools/htk2kaldi.py workdir/test_align.mlf workdir/state2id.lst FBANK workdir/test
+% \end{verbatim}
+% }
+
+% from the run_normutts.log
+% FBANK_normutts_dnn_4x256, tor 28 apr 2016 09:02:46 CEST
+% [2016-04-28 09:03:00.541794] > epoch 1, training error 62.971830 (%)
+% [2016-04-28 09:03:00.859022] > epoch 1, lrate 0.080000, validation error 56.570653 (%)
+% ...
+% [2016-04-28 09:08:56.790968] > epoch 38, training error 42.781449 (%)
+% [2016-04-28 09:08:57.100153] > epoch 38, lrate 0.002500, validation error 45.657491 (%)
+% -----------------------------------------------------------------------------------------------
+% FBANK_normutts_dnn_4x1024, tor 28 apr 2016 09:08:57 CEST
+% [2016-04-28 09:09:29.045206] > epoch 1, training error 61.181427 (%)
+% [2016-04-28 09:09:30.261683] > epoch 1, lrate 0.080000, validation error 55.623905 (%)
+% ...
+% [2016-04-28 11:21:00.601753] > epoch 268, training error 0.106718 (%)
+% [2016-04-28 11:21:01.815841] > epoch 268, lrate 0.001250, validation error 11.454683 (%)
+% -----------------------------------------------------------------------------------------------
+% FBANK_normutts_dbn_dnn_4x1024, tor 28 apr 2016 11:21:07 CEST
+% [2016-04-28 11:21:10.462387] > r_cost = reconstruction cost, fe_cost = (approximate) value of free energy function
+% [2016-04-28 11:23:28.122119] > pre-training layer 0, epoch 0, r_cost 0.286130, fe_cost 4.305595
+% ...
+% [2016-04-28 11:44:11.847064] > pre-training layer 0, epoch 9, r_cost 0.166017, fe_cost 0.417481
+% [2016-04-28 11:48:11.155392] > pre-training layer 1, epoch 0, r_cost 0.000855, fe_cost 1.555202
+% ...
+% [2016-04-28 12:24:03.801448] > pre-training layer 1, epoch 9, r_cost 0.000598, fe_cost 1.118651
+% [2016-04-28 12:28:07.951985] > pre-training layer 2, epoch 0, r_cost 0.000729, fe_cost 6.828320
+% ...
+% [2016-04-28 13:04:19.219350] > pre-training layer 2, epoch 9, r_cost 0.000340, fe_cost 1.126437
+% [2016-04-28 13:08:17.491979] > pre-training layer 3, epoch 0, r_cost 0.000537, fe_cost 2.035482
+% ...
+% [2016-04-28 13:44:31.529472] > pre-training layer 3, epoch 9, r_cost 0.000328, fe_cost 0.929703
+% -----------------------------------------------------------------------------------------------
+% FBANK_normutts_dnn_4x1024_relu, tor 28 apr 2016 13:44:41 CEST
+% [2016-04-28 13:45:15.690271] > epoch 1, training error 54.706790 (%)
+% [2016-04-28 13:45:16.900107] > epoch 1, lrate 0.080000, validation error 50.930320 (%)
+% ...
+% [2016-04-28 14:07:09.756427] > epoch 42, training error 2.216886 (%)
+% [2016-04-28 14:07:10.967680] > epoch 42, lrate 0.000313, validation error 15.546510 (%)
+% -----------------------------------------------------------------------------------------------
+% FBANK_normutts_dnn_4x1024_relu_-5+5, tor 28 apr 2016 14:18:19 CEST
+% [2016-04-28 14:18:52.951737] > epoch 1, training error 27.997047 (%)
+% [2016-04-28 14:18:54.286170] > epoch 1, lrate 0.080000, validation error 27.723423 (%)
+% ...
+% [2016-04-28 14:32:53.521654] > epoch 26, training error 2.494337 (%)
+% [2016-04-28 14:32:54.852995] > epoch 26, lrate 0.000156, validation error 8.184871 (%)
+% -----------------------------------------------------------------------------------------------
+% FBANK_normutts_dnn_4x256_relu, tor 28 apr 2016 14:58:05 CEST
+% [2016-04-28 14:58:20.410783] > epoch 1, training error 55.508730 (%)
+% [2016-04-28 14:58:20.733076] > epoch 1, lrate 0.080000, validation error 51.724348 (%)
+% ...
+% [2016-04-28 15:01:59.981060] > epoch 23, training error 34.212045 (%)
+% [2016-04-28 15:02:00.291381] > epoch 23, lrate 0.000625, validation error 41.840683 (%)
+% -----------------------------------------------------------------------------------------------
+% FBANK_normutts_dnn_4x256_relu_-5+5, tor 28 apr 2016 15:02:00 CEST
+% [2016-04-28 15:02:17.954855] > epoch 1, training error 26.691075 (%)
+% [2016-04-28 15:02:18.359666] > epoch 1, lrate 0.080000, validation error 21.403451 (%)
+% ...
+% [2016-04-28 15:06:32.280196] > epoch 26, training error 4.376913 (%)
+% [2016-04-28 15:06:32.682004] > epoch 26, lrate 0.000625, validation error 10.133129 (%)
+% -----------------------------------------------------------------------------------------------
+% MFCC_0_D_A_normutts_dnn_4x1024_relu, tor 28 apr 2016 15:06:33 CEST
+% [2016-04-28 15:07:07.158542] > epoch 1, training error 27.583554 (%)
+% [2016-04-28 15:07:08.366009] > epoch 1, lrate 0.080000, validation error 22.238245 (%)
+% ...
+% [2016-04-28 15:19:54.799216] > epoch 25, training error 0.002567 (%)
+% [2016-04-28 15:19:56.005185] > epoch 25, lrate 0.005000, validation error 4.334599 (%)
+
+\section{Phoneme Recognition with Deep Neural Networks}
+\label{sec:dnn}
+%Consult the documentation at the PDNN site: \url{https://www.cs.cmu.edu/~ymiao/pdnntk.html}.
+
+%\begin{mdframed}
+%\textbf{Disclaimer:} By default PDNN uses a specific strategy for updating the learning rate that results in different number of epochs depending on the validation error. In my tests, each training usually lasted less than 20 minutes on a TITAN GPU, apart for one training that took nearly 300 epochs and nearly 5 hours. The number of epochs required for convergence is hard to predict in advance. Depending on how you are planning to run the lab, you might want to limit the number of epochs, or to let the training converge to the optimum. Check the options provided by PDNN and report the strategy you have chosen.
+%
+%Also, if you plan to leave the training passes run while you are away, an useful command to learn is \texttt{screen}. This program lets you \emph{detach} the terminal where you are running, you can logout and later reattach the terminal to check the results.
+%\end{mdframed}
+With the help of Keras\footnote{\url{https://keras.io/}}, define a deep neural network that will classify every single feature vector into one of the states in \texttt{stateList}, defined in Section~\ref{sec:datapreparation}. Refer to the Keras documentation to learn the details of defining and training models and layers. In the following instructions we only give hints to the classes and methods to use for every step.
+
+\begin{mdframed}
+Note that Keras can run both on CPUs and GPUs. Because it will be faster on a fast GPU it is advised to run large training sessions on \texttt{tegner.pdc.kth.se} ad PDC or using the Google Cloud Platform. However, it is strongly advised to test a simpler version of the models on your own computer first to avoid bugs in your code. Also, if for some reason you do not manage to run on GPUs, you can still perform the lab, running simpler models on your own computer. The goal of the lab is not to achieve state-of-the-art performance, but to be able to compare different aspects of modelling, feature extraction, and optimisation.
+\end{mdframed}
+
+Use the \texttt{Sequential} class from \texttt{keras.models} to define the model and the \texttt{Dense} and \texttt{Activation} classes from \texttt{keras.layers.core} to define each layer in the model.
+Define the proper size for the input and output layers depending on your feature vectors and number of states. Choose the appropriate activation function for the output layer, given that you want to perform classification.
+Be prepared to explain why you chose the specific activation and what alternatives there are.
+For the intermediate layers you can choose, for example, between \texttt{relu} and \texttt{sigmoid} activation functions.
+
+With the method \texttt{compile()} from the \texttt{Sequential} class, decide the kind of \texttt{loss} function, and \texttt{metrics} most appropriate for classification. The method also lets you choose an \texttt{optimizer}. Here you can choose for example between Stochastic Gradient Descent (\texttt{sgd}) or the Adam optimiser (\texttt{adam}). Each has a set of parameters to tune. You can use the default values for this exercise, unless you have a reason to do otherwise.
+
+For each model, use the \texttt{fit()} method in the \texttt{Sequential} class to perform the training. You should specify both the training and validation data with the respective targets. What is the purpose of the validation data? Here, one of the important parameters is the batch size. A typical value is 256, but you can experiment with this to see if convergence becomes faster or slower.
+
+Here are the minimum list of configurations to test, but you can test your favourite models if you manage to run the training in reasonable time. Also, depending of the speed of your hardware you can reduce the size of the layers, and skip the models with 2 and 3 hidden layers:
+\begin{enumerate}
+\item input: liftered MFCCs, one to four hidden layers of size 256, rectified linear units
+\item input: filterbank features, one to four hidden layers of size 256, rectified linear units
+\item same as 1. but with dynamic features as explained in Section~\ref{sec:dynamicfeatures}
+\item same as 2. but with dynamic features as explained in Section~\ref{sec:dynamicfeatures}
+\end{enumerate}
+Note the evolution of the loss function and the accuracy of the model for every epoch. What can you say comparing the results on the training and validation data?
+
+There are many other parameters that you can vary, if you have time to play with the models. For example:
+%Your task is to define a Deep Neural Network with:
+%For each training, .
+\begin{itemize}
+\item different activation functions than ReLU
+\item different number of hidden layers
+\item different number of nodes per layer
+\item different length of context input window
+\item strategy to update learning rate and momentum
+\item initialisation with DBNs instead of random
+\item different normalisation of the feature vectors
+\end{itemize}
+If you have time, chose a parameter to test.
+%You also need to figure out:
+%\begin{itemize}
+%\item the size of the input layer (dependent on the features you computed in Section~\ref{sec:features})
+%\item the size of the output layer (dependent on the number of HMM states, see Section~\ref{sec:features})
+%\item the activation function you want to use
+%\item the initialisation (random or Deep Belief Network)
+%\item number of iterations
+%\item training parameters (learning rate and momentum)
+%\end{itemize}
+%
+%You will not have time to test many different configurations. Choose a few aspects that you find interesting to test, and report results for those. Motivate every choice you make (do not trust the defaults in PDNN, or if you do, say why). Train the network and comment on the evolution of the training criterion for different iterations. Test the network on the test data on a frame-by-frame basis.
+%
+%Compare the results obtained with \texttt{FBANK} and \texttt{MFCC} features.
+
+\subsection{Detailed Evaluation}
+After experimenting with different models in the previous section, select one or two models to test properly. Use the method \texttt{predict()} from the class \texttt{Sequential} to evaluate the output of the network given the test frames in \texttt{FEATKIND\_test\_x}. Plot the posteriors for each class for an example utterance and compare them to the target values. What properties can you observe?
+
+For all the test material, evaluate the classification performance from the DNN in the following ways:
+\begin{enumerate}
+\item \emph{frame-by-frame at the state level}: count the number of frames (time steps) that were correctly classified over the total
+\item \emph{frame-by-frame at the phoneme level}: same as 1., but merge all states that correspond to the same phoneme, for example \texttt{ox\_0}, \texttt{ox\_1} and \texttt{ox\_2} are merged to \texttt{ox}
+\item \emph{edit distance at the state level}: convert the \emph{frame-by-frame} sequence of classifications into a transcription by merging all the consequent identical states, for example \texttt{ox\_0 ox\_0 ox\_0 ox\_1 ox\_1 ox\_2 ox\_2 ox\_2 ox\_2\dots} becomes \texttt{ox\_0 ox\_1 ox\_2 \dots}. Then measure the Phone Error Rate (PER), that is the length normalised edit distance between the sequence of states from the DNN and the correct transcription (that has also been converted this way).
+\item \emph{edit distance at the phoneme level}: same as 3. but merging the states into phonemes as in 2.
+\end{enumerate}
+For the first two types of evaluations, besides the global scores, compute also confusion matrices.
+
+\subsection{Possible questions}
+\begin{itemize}
+\item what is the influence of feature kind and size of input context window?
+\item what is the purpose of normalising (standardising) the input feature vectors depending on the activation functions in the network?
+\item what is the influence of the number of units per layer and the number of layers?
+\item what is the influence of the activation function (when you try other activation functions than ReLU, you do not need to reach convergence in case you do not have enough time)
+\item what is the influence of the learning rate/learning rate strategy?
+\item how stable are the posteriograms from the network in time?
+\item how do the errors distribute depending on phonetic class?
+\end{itemize}
+
+%This part will probably require more time than you have to complete the lab and is therefore optional. The reason why I included it, is to show how you can use the functions you implemented in the previous labs, to build a simple, but complete DNN-HMM recogniser.
+% \subsection{Isolated Word Recognition}
+% \begin{enumerate}
+% \item In the list of test files \verb|workdir/test.lst|, select only the isolated digit files (the ones with name in the form \verb|[oz1-9][ab].wav|.
+% %\item build 11 transition models (one per digit) by concatenating the transition matrices of the phonetic models in \verb|models_MFCC_0_D_A/hmm19/hmmdefs.mmf|, according to the pronunciation dictionary \verb|workdir/pron1.dic|. Add silence at the beginning and end of each model. Keep track of the mapping between original state in the phoneme models, and indices in the word level transition matrices
+% \item Compute state posteriors for each utterance with your DNN.
+% \item estimate the a-priori probability of each state from the \verb|workdir/train_tr_FBANK.pfile| file (you can use the function \verb|pfile_read| to import the labels into Python)
+% \item convert posteriors to \emph{scaled likelihoods} for the states using the a-priori probabilities at the previous points
+% \item reload the transition matrices in \verb|models[i]['hmm']['transmat']| from Lab 2, with index from 0 to 10 for the 11 digits. Refer to \verb|models[i]['digit']| to know which digit the model corresponds to.
+% \item Create a mapping between the states in the DNNs output layer and the indices in your word level transition matrices. To do this, refer to the pronunciation of each digit that you can find in \verb|models[i]['pron']| and to the \verb|workdir/state2id.lst| file.
+% \item using your \texttt{forward} function from Lab~2, score each utterance with each transition model and the scaled likelihoods from the DNN (be careful to match the states ids in your word level models to those from the DNN output layer, see also a previous point)
+% \item classify each utterance according to the model with maximum likelihood.
+% \item compare your results with those obtained with the GMM-HMM.
+% \end{enumerate}
+
+% \subsection{Continuous Speech Recognition}
+% \begin{enumerate}
+% \item combine the word level transition models from the previous section to form a transition matrix that describes the following model (notice that you need to remove the three silence states at the beginning and end of each \verb|models[i]['hmm'][transmat]| before you combine them in the loop):
+%   \begin{center}
+%     \begin{tikzpicture}%[thick,scale=0.4, every node/.style={scale=0.4}]
+%       \node[rectangle,draw,thick] (hmm1) at (0,0) {oh};
+%       \node[rectangle,draw,thick,below of=hmm1] (hmm2) {zero};
+%       \node[rectangle,draw,thick,below of=hmm2] (hmm3) {one};
+%       \node[below of=hmm3] (dots) {\dots};
+%       \node[rectangle,draw,thick,below of=dots] (hmmK) {nine};
+%       \node[circle,draw,thick,left of=hmm3, node distance=2cm] (null1) {};
+%       \node[circle,draw,thick,right of=hmm3, node distance=2cm] (null2) {};
+%       \node[rectangle, draw, thick, left of=null1] (sil1) {sil};
+%       \node[rectangle, draw, thick, right of=null2] (sil2) {sil};
+%       \foreach \n in {hmm1,hmm2,hmm3,hmmK} {
+%         \draw[->,thick,-latex] (null1) .. controls ($ (\n.west) + (-0.5,0) $) .. (\n.west);
+%         \draw[->,thick,-latex] (\n.east) .. controls ($ (\n.east) + (0.5,0) $) .. (null2);
+%       };
+%       \draw[->,thick,-latex] (null2) .. controls ($ (null2) + (0,-4) $) and ($ (null1) + (0,-4) $) .. (null1);
+%       \draw[->,thick,-latex] (sil1) -- (null1);
+%       \draw[->,thick,-latex] (null2) -- (sil2);
+% %          \pause
+% %          \draw[->,thick,-latex,red] (null1) to[bend left] (hmm2) to[bend left] (null2) to[bend left] (null1) to[bend right] (hmmK) to[bend right] (null2) to[bend right] (null1) to[bend left] (hmm1);
+%     \end{tikzpicture}
+%   \end{center}
+%   Use a \emph{flat} language model, that is, at every word transition, it is equally likely to access any of the 11 words.
+% \item excite the DNN with all the test data in \verb|workdir/test.lst|, and get posterior probabilities for each utterance, each frame and each state in the model
+% \item using the Viterbi decoder you implemented in Lab~2, find the optimal word sequence in each utterance (be careful to match the state ids in your HMM model to those from the DNN output layer)
+% \item score the transcribed utterances using work accuracy or word error rate.
+% \item compare with the results obtained with the GMM-HMM.
+% \end{enumerate}
+
+\clearpage
+\appendix
+
+\clearpage
+\section{PDC Specific Instructions}
+\label{app:pdc}
+In order to run Keras and Tensorflow on GPUs, you may use nodes on \texttt{tengren.pdc.kth.se}. You can refer to the presentation from PDC you can find in the course web page for detailed information, and to the \url{https://www.pdc.kth.se/} website for detailed instruction. Here we give an example usage that should work for carrying out the relevant steps in this lab.
+
+\begin{enumerate}
+\item First you need to authenticate with the help of kerberos on your local machine. From a machine where kerberos is installed and configured run:
+\begin{verbatim}
+kinit -f -l 7d <username>@NADA.KTH.SE
+\end{verbatim}
+to get a 7 days forwardable ticket on your local machine. If you are using a CSC Ubuntu machine, run instead 
+\begin{verbatim}
+pdc-kinit -f -l 7d <username>@NADA.KTH.SE
+\end{verbatim}
+this will keep also the ticket \verb|<username>@KTH.SE| allowing you to see the files in your home directory on AFS.
+\item then you login with \texttt{ssh}, (or \texttt{pdc-ssh} on CSC Ubuntu)\footnote{see \url{https://www.pdc.kth.se/resources/software/login-1/.ssh-conf} to configure ssh correctly for PDC}:
+\begin{verbatim}
+[pdc-]ssh -Y <username>@tegner.pdc.kth.se
+\end{verbatim}
+\item the lab requires several hundreds of MB of space. If you do not have enough space in your home directory, put the lab files under
+\begin{verbatim}
+/cfs/klemming/nobackup/<first_letter_in_username>/<username>/
+\end{verbatim}
+remember that the data stored there is not backed up. If you need to copy the files back and forward with your local machine, check the \texttt{rsync} command,
+%\item create a theano configuration file called \texttt{.theanorc} in your home directory with the following content:
+%\begin{verbatim}
+%[global]
+%device = gpu0
+%floatX = float32
+%[nvcc]
+%fastmath = True
+%\end{verbatim}
+\item In order to queue your job, you will use the command \texttt{sbatch}. Create a \texttt{sbatch} script called, for example, \texttt{submitjob.sh} with the following content, assuming that the script you want to run is called \texttt{lab3\_dnn.py}. Note that \texttt{sbatch} uses the information in commented lines starting with \texttt{\#SBATCH}. If you want to comment those out, put an extra \texttt{\#} in front of the line.
+\begin{verbatim}
+#!/bin/bash 
+
+# Arbitrary name of the the job you want to submit
+#SBATCH -J myjob
+
+# This allocates a maximum of 20 minutes wall-clock time
+# to this job. You can change this according to your needs,
+# but be aware that shorter time allocations are prioritised
+#SBATCH -t 0:20:00
+
+# set the project to be charged for this job
+# The format should be edu<year>.DT2119
+#SBATCH -A edu19.DT2119
+
+# Use K80 GPUs (if not set, you might get nodes without a CUDA GPU)
+# If you have troubles getting time on those nodes, try with the
+# less powerful Quadro K420 GPUs with --gres=gpu:K420:1
+#SBATCH --gres=gpu:K80:2
+
+# Standard error and standard output to files
+#SBATCH -e error_file.txt
+#SBATCH -o output_file.txt
+
+# Run the executable (add possible additional dependencies here)
+module add cuda
+module add anaconda/py35/4.2.0
+source activate tensorflow
+python3 lab3_dnn.py
+\end{verbatim}
+
+\item submit your job with
+\begin{verbatim}
+sbatch submitjob.sh
+\end{verbatim}
+\item check the status with
+\begin{verbatim}
+squeue -u <username>
+\end{verbatim}
+The column marked with \texttt{ST} displays the status. \texttt{PD} means pending, \texttt{R} means running, and so on. Check the \texttt{squeue} manual pages for more information.
+%on \texttt{tegner} you get time allocation running\footnote{The last optional argument ensures you get a node with NVidia Tesla K80 GPU , otherwise you will get a node with NVidia Quadro K420. Refer to the page \url{https://www.pdc.kth.se/resources/computers/tegner/hardware} for more information about the hardware on tegner.}:
+%\begin{verbatim}
+%salloc -t <hours>:<minutes>:<seconds> -A edu16.DT2118 --gres=gpu:K80:2
+%\end{verbatim}
+%\item you will get a message like the following:
+%\begin{verbatim}
+%salloc: Granted job allocation 41999
+%salloc: Waiting for resource configuration
+%salloc: Nodes t02n29 are ready for job
+%\end{verbatim}
+%where the job number (\texttt{41999}) and the associated node (\texttt{t02n29}) will vary.
+%\item \textbf{From another teminal window on your local machine}, login on that specific node:
+%\begin{verbatim}
+%[pdc-]ssh -Y t02n29.pdc.kth.se
+%\end{verbatim}
+%running \texttt{ssh} from \texttt{tegner.pdc.kth.se} to the node \textbf{will not work}
+%\item in order to get the required software, from the lab main directory run
+%\begin{verbatim}
+%source tools/modules_tegner
+%\end{verbatim}
+%\item if everything went well, now you can run the PDNN scripts with, for example
+%\begin{verbatim}
+%python $PDNNDIR/cmds/run_DNN.py ... |& tee -a logfile
+%\end{verbatim}
+%where the \texttt{tee} command will display the standard output and standard error of the training command in the terminal as well as appending it to the \texttt{logfile}
+%\item if you want to logout while the program is running, hit \texttt{ctrl+a} and then \texttt{d} to detach the screen and logout. When you login again into that node, you can run \texttt{screen -r} to reattach the terminal.
+%\item while you are logged in on the specific node, you can check CPU usage with the command \texttt{top} and GPU useage with the command \texttt{nvidia-smi}.
+\end{enumerate}
+
+%Then you need to get time allocation to run. At the moment of writing these instructions, it seems that the \texttt{sbatch} command described during the PDC introduction is not working with Theano. The workaround is to get allocation on a particular node and then explicitly login with \texttt{ssh} to that node. To do this you need to run the following commands:
+%\begin{verbatim}
+%tegner-login-1$ salloc -t 60 -A edu16.DT2118
+%salloc: Granted job allocation 41644
+%salloc: Waiting for resource configuration
+%salloc: Nodes t02n01 are ready for job
+%tegner-login-1$ ssh t02n01.pdc.kth.se
+%t02n01$ cd <location_of_the_lab_files>
+%t02n01$ source tools/modules_tegner
+%t02n01$ run_DNN.py ...
+%\end{verbatim}
+
+%The string \texttt{t02n01} will vary depending on which node you get allocated. \textbf{NOTE:} at the moment of writing, this workaround works with simple Theano scripts, such as the ones you can find here \url{http://deeplearning.net/software/theano/tutorial/using_gpu.html}, but it does not work with PDNN. I have been in contact with the people at PDC to solve the problem, but still have not received a solution. I will post more information on the course web page as soon as I have a solution.
+
+You can check the standard output and standard error messages of your job in \verb|output_file.txt| and \verb|error_file.txt|. If you wish to kill your job before its normal termination, use \verb|scancel <jobid>|.
+
+\subsection{Using \texttt{salloc} instead of \texttt{sbatch}}
+In some cases \texttt{sbatch} might not be the best choice. This is the case, for example, when you want to debug your code on the computational node, or if \texttt{sbatch} does not work well with your code. In this case, follow the above instructions up to point number 4 and then:
+
+\begin{enumerate}
+\setcounter{enumi}{4}
+\item on \texttt{tegner} you get time allocation running\footnote{The last optional argument ensures you get a node with NVidia Tesla K80 GPU , otherwise you will get a node with NVidia Quadro K420. Refer to the page \url{https://www.pdc.kth.se/resources/computers/tegner/hardware} for more information about the hardware on tegner.}:
+\begin{verbatim}
+salloc -t <hours>:<minutes>:<seconds> -A edu19.DT2119 --gres=gpu:K80:2
+\end{verbatim}
+\item you will get a message like the following:
+\begin{verbatim}
+salloc: Granted job allocation 41999
+salloc: Waiting for resource configuration
+salloc: Nodes t02n29 are ready for job
+\end{verbatim}
+where the job number (\texttt{41999}) and the associated node (\texttt{t02n29}) will vary.
+\item From another teminal window \textbf{on your local machine}, login on that specific node:
+\begin{verbatim}
+[pdc-]ssh -Y t02n29.pdc.kth.se
+\end{verbatim}
+running \texttt{ssh} from \texttt{tegner.pdc.kth.se} to the node \textbf{will not work}
+\item run the \texttt{screen} command. This will start a screen terminal, that will allow you to \emph{detach} the terminal and logout without stopping the process you want to run\footnote{Refer to the screen manual for further info \url{http://linux.die.net/man/1/screen}}
+\item in order to get the required software, from the lab main directory run
+\begin{verbatim}
+module add cuda
+module add anaconda/py35/4.2.0
+source activate tensorflow
+\end{verbatim}
+\item if everything went well, now you can run your script with, for example
+\begin{verbatim}
+python3 lab3_dnn.py |& tee -a logfile
+\end{verbatim}
+where the \texttt{tee} command will display the standard output and standard error of the training command in the terminal as well as appending it to the \texttt{logfile}
+\item if you want to logout while the program is running, hit \texttt{ctrl+a} and then \texttt{d} to detach the screen and logout. When you login again into that node, you can run \texttt{screen -r} to reattach the terminal.
+\item while you are logged in on the specific node, you can check CPU usage with the command \texttt{top} and GPU usage with the command \texttt{nvidia-smi}.
+\end{enumerate}
+
+\textbf{NOTE: if you use this method, the time allocation system will continue charging you time, even if the process has terminated, until you logout from the node.}
+
+Use \verb|squeue [-u <username>]| to see your time allocated jobs, and \verb|scancel jobid| to remove a submitted job.
+
+\clearpage
+
+\section{Required Software on Own Computer}
+If you perform the lab in one of the CSC Ubuntu computers, or on \texttt{tengren.pdc.kth.se}, all the required software is already installed and can be made available by running the commands shown in the previous section.
+
+If you wish to perform the lab on your own computer, you will need to install the required software by hand. Please refer to the documentation websites for more detailed information, here we just give quick instructions that might not be optimal.
+
+\subsection{Keras}
+If you use the Anaconda\footnote{\url{https://www.anaconda.com/}} Python distribution, you should be able to run
+\begin{verbatim}
+conda install keras
+\end{verbatim}
+or
+\begin{verbatim}
+conda install keras-gpu
+\end{verbatim}
+if you have a GPU that supports CUDA. With other versions of python there are similar \texttt{pip} commands.
+
+\subsection{Wavesurfer}
+This can be useful to visualise the results (label files) together with the wave files. The version of Wavesurfer that is part of the apt repositories unfortunately on tcl-tk 8.5, which also needs to be installed:
+\begin{verbatim}
+sudo apt install tk8.5 libsnack-alsa wavesurfer
+\end{verbatim}
+If you don't want to istall tcl-tk 8.5, you can dowload the latest version of Wavesurfer from \url{https://sourceforge.net/projects/wavesurfer/}.
+
+\end{document}
+\endinput
+
+\section{Deep Learning}
+
+\begin{verbatim}
+kinit <username>@NADA.KTH.SE
+ssh tegner.pdc.kth.se
+sbatch <script>
+#!/bin/bash -l
+#SBATCH -J myjob
+# 10 minute wall-clock time will be given to this job
+#SBATCH -t 10:00
+# Number of nodes
+#SBATCH --nodes=2
+# set tasks per node to 24 to disable hyperthreading
+#SBATCH --ntasks-per-node=24
+# load intel compiler and mpi
+module load i-compilers intelmpi
+# Run program
+mpirun -n 48 ./hello_mpi
+\end{verbatim}
+
+Data under \verb|/cfs/klemming/nobackup/g/giampi/corpora/|
+
+\end{document}
+\endinput
+
+% do not remove (emacs configuration)
+% Local variables:
+% enable-local-variables: t
+% ispell-local-dictionary: "british"
+% mode: latex
+% eval: (flyspell-mode)
+% eval: (flyspell-buffer)
+% End:
